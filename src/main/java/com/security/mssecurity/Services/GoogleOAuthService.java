@@ -19,21 +19,35 @@ import org.springframework.web.reactive.function.client.WebClient;
 import java.util.Map;
 
 /**
- * Servicio que maneja toda la lógica de autenticación con Google OAuth 2.0
+ * Servicio que implementa el flujo de autenticación OAuth 2.0 con Google.
  * 
- * FLUJO COMPLETO:
- * 1. El usuario hace clic en "Iniciar sesión con Google"
- * 2. Google le muestra pantalla de permisos
- * 3. Google redirige a tu app con un CODE
- * 4. Este servicio intercambia el CODE por un ACCESS_TOKEN
- * 5. Con el ACCESS_TOKEN, obtenemos los datos del usuario (nombre, email)
- * 6. Creamos o buscamos el usuario en nuestra BD
- * 7. Generamos nuestro propio JWT
+ * OAuth 2.0 es un protocolo de autorización que permite a los usuarios
+ * autenticarse utilizando sus cuentas de proveedores externos (en este caso Google)
+ * sin compartir sus credenciales con la aplicación.
+ * 
+ * FLUJO DE AUTENTICACIÓN:
+ * 
+ * 1. El usuario solicita iniciar sesión con Google
+ * 2. La aplicación redirige al usuario a la pantalla de consentimiento de Google
+ * 3. El usuario autoriza el acceso y Google redirige de vuelta con un código de autorización
+ * 4. La aplicación intercambia el código por un token de acceso (access_token)
+ * 5. Con el access_token, se obtienen los datos del usuario desde Google
+ * 6. Se crea o recupera el usuario en la base de datos local
+ * 7. Se genera un JWT propio para las sesiones subsecuentes
+ * 
+ * Configuración requerida en Google Cloud Console:
+ * - Crear un proyecto en console.cloud.google.com
+ * - Habilitar la API de Google+
+ * - Configurar la pantalla de consentimiento OAuth
+ * - Crear credenciales OAuth 2.0 (client_id y client_secret)
+ * - Registrar las URIs de redirección autorizadas
+ * 
+ * @see com.security.mssecurity.Controllers.GoogleOAuthController
+ * @see GoogleUserInfo
  */
 @Service
 public class GoogleOAuthService {
 
-    // Inyectamos los valores desde application.properties
     @Value("${spring.security.oauth2.client.registration.google.client-id}")
     private String clientId;
 
@@ -55,113 +69,109 @@ public class GoogleOAuthService {
     @Autowired
     private UserRoleRepository userRoleRepository;
 
-    // WebClient es como un "navegador programático" para hacer peticiones HTTP
+    /**
+     * Cliente HTTP reactivo para realizar peticiones a los endpoints de Google.
+     */
     private final WebClient webClient = WebClient.builder().build();
 
     /**
-     * PASO 1: Intercambiar el CODE por un ACCESS_TOKEN
+     * Intercambia el código de autorización por un token de acceso.
      * 
-     * Google nos dio un "code" temporal. Ahora debemos cambiarlo por un
-     * "access_token" que nos permite acceder a los datos del usuario.
+     * Este método realiza una petición POST al endpoint de tokens de Google,
+     * enviando el código de autorización junto con las credenciales de la aplicación.
      * 
-     * Es como: el CODE es un ticket, el ACCESS_TOKEN es la entrada real.
+     * Endpoint: https://oauth2.googleapis.com/token
+     * 
+     * @param code Código de autorización recibido de Google
+     * @return Token de acceso (access_token) para consultar la API de Google
      */
     public String exchangeCodeForAccessToken(String code) {
-        // URL de Google para intercambiar códigos por tokens
         String tokenUrl = "https://oauth2.googleapis.com/token";
 
-        // Preparamos los datos que Google requiere
         MultiValueMap<String, String> formData = new LinkedMultiValueMap<>();
-        formData.add("code", code);                      // El código que Google nos dio
-        formData.add("client_id", clientId);             // Tu ID de aplicación
-        formData.add("client_secret", clientSecret);     // Tu secreto (nunca compartir!)
-        formData.add("redirect_uri", redirectUri);       // Debe coincidir con Google Console
-        formData.add("grant_type", "authorization_code"); // Tipo de flujo OAuth
+        formData.add("code", code);
+        formData.add("client_id", clientId);
+        formData.add("client_secret", clientSecret);
+        formData.add("redirect_uri", redirectUri);
+        formData.add("grant_type", "authorization_code");
 
-        // Hacemos la petición POST a Google
         Map<String, Object> response = webClient.post()
                 .uri(tokenUrl)
                 .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                 .body(BodyInserters.fromFormData(formData))
                 .retrieve()
-                .bodyToMono(Map.class)  // Convertimos la respuesta a un Map
-                .block();               // Esperamos la respuesta (síncrono)
+                .bodyToMono(Map.class)
+                .block();
 
-        // Google nos responde con algo como:
-        // { "access_token": "ya29.xxx...", "expires_in": 3600, ... }
         return (String) response.get("access_token");
     }
 
     /**
-     * PASO 2: Obtener la información del usuario desde Google
+     * Obtiene la información del usuario desde la API de Google.
      * 
-     * Con el ACCESS_TOKEN, podemos preguntarle a Google:
-     * "¿Quién es este usuario?"
+     * Realiza una petición GET al endpoint de userinfo de Google,
+     * utilizando el token de acceso para autenticar la solicitud.
+     * 
+     * Endpoint: https://www.googleapis.com/oauth2/v3/userinfo
+     * 
+     * @param accessToken Token de acceso obtenido previamente
+     * @return Objeto GoogleUserInfo con los datos del usuario
      */
     public GoogleUserInfo getUserInfo(String accessToken) {
-        // URL de Google para obtener info del usuario
         String userInfoUrl = "https://www.googleapis.com/oauth2/v3/userinfo";
 
-        // Hacemos GET con el token en el header Authorization
         return webClient.get()
                 .uri(userInfoUrl)
-                .header("Authorization", "Bearer " + accessToken)  // El token va aquí
+                .header("Authorization", "Bearer " + accessToken)
                 .retrieve()
-                .bodyToMono(GoogleUserInfo.class)  // Convertimos a nuestro DTO
+                .bodyToMono(GoogleUserInfo.class)
                 .block();
     }
 
     /**
-     * PASO 3: Procesar el login/registro con Google
+     * Procesa el flujo completo de autenticación con Google.
      * 
-     * Este es el método principal que une todo:
-     * - Si el usuario ya existe → lo buscamos y generamos JWT
-     * - Si es nuevo → lo creamos y generamos JWT
+     * Este método orquesta todo el proceso de autenticación:
+     * 1. Intercambia el código por un token de acceso
+     * 2. Obtiene la información del usuario de Google
+     * 3. Busca o crea el usuario en la base de datos local
+     * 4. Asigna el rol "CIUDADANO" si es un nuevo usuario
+     * 5. Genera y retorna un token JWT propio
+     * 
+     * @param code Código de autorización recibido de Google
+     * @return Token JWT para autenticación en la aplicación
+     * @throws RuntimeException Si el email ya está registrado con otro método de autenticación
      */
     public String processGoogleLogin(String code) {
-        // PASO 1: Intercambiar code por access_token
         String accessToken = exchangeCodeForAccessToken(code);
-        
-        // PASO 2: Obtener datos del usuario de Google
         GoogleUserInfo googleUser = getUserInfo(accessToken);
         
-        // PASO 3: Buscar si el usuario ya existe en nuestra BD
         User existingUser = userRepository.getUserByEmail(googleUser.getEmail());
         
         if (existingUser != null) {
-            // El usuario YA existe
-            
-            // Verificamos que sea un usuario de Google (no de registro local)
             if (!"GOOGLE".equals(existingUser.getAuthProvider())) {
-                // El email existe pero se registró con contraseña
                 throw new RuntimeException(
-                    "Este email ya está registrado. Por favor, inicia sesión con tu contraseña."
+                    "Este email ya está registrado. Por favor, inicie sesión con su contraseña."
                 );
             }
-            
-            // Es usuario de Google, generamos su JWT
             return jwtService.generateToken(existingUser);
         }
         
-        // PASO 4: El usuario NO existe, lo creamos
         User newUser = new User(
-                googleUser.getName(),   // Nombre de Google
-                googleUser.getEmail(),  // Email de Google
-                "GOOGLE",               // authProvider = GOOGLE
-                true                    // Flag para usar el constructor OAuth
+                googleUser.getName(),
+                googleUser.getEmail(),
+                "GOOGLE",
+                true
         );
         
-        // Guardamos el nuevo usuario
         User savedUser = userRepository.save(newUser);
         
-        // PASO 5: Asignar rol "CIUDADANO" (igual que en registro normal)
         Role ciudadanoRole = roleRepository.findByName("CIUDADANO");
         if (ciudadanoRole != null) {
             UserRole userRole = new UserRole(savedUser, ciudadanoRole);
             userRoleRepository.save(userRole);
         }
         
-        // PASO 6: Generar y retornar el JWT
         return jwtService.generateToken(savedUser);
     }
 }

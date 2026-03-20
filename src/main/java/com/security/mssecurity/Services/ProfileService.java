@@ -7,28 +7,62 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+/**
+ * Servicio que gestiona las operaciones CRUD de perfiles de usuario.
+ * 
+ * Los perfiles almacenan información adicional del usuario como
+ * teléfono y fotografía, separada de los datos de autenticación.
+ * 
+ * @see ProfileRepository
+ * @see com.security.mssecurity.Models.Profile
+ */
 @Service
 public class ProfileService {
+
     @Autowired
     private ProfileRepository profileRepository;
 
-    public List<Profile> find(){
+    /**
+     * Obtiene la lista de todos los perfiles.
+     * 
+     * @return Lista de perfiles
+     */
+    public List<Profile> find() {
         return this.profileRepository.findAll();
     }
 
-    public Profile findById(String id){
+    /**
+     * Busca un perfil por su identificador.
+     * 
+     * @param id Identificador único del perfil
+     * @return Perfil encontrado o null si no existe
+     */
+    public Profile findById(String id) {
         Profile theProfile = this.profileRepository.findById(id).orElse(null);
         return theProfile;
     }
 
-    public Profile create(Profile newProfile){
+    /**
+     * Crea un nuevo perfil.
+     * 
+     * @param newProfile Datos del nuevo perfil
+     * @return Perfil creado con su ID asignado
+     */
+    public Profile create(Profile newProfile) {
         return this.profileRepository.save(newProfile);
     }
 
-    public Profile update(String id, Profile newProfile){
+    /**
+     * Actualiza un perfil existente.
+     * 
+     * @param id         Identificador del perfil a actualizar
+     * @param newProfile Datos actualizados
+     * @return Perfil actualizado o null si no existe
+     */
+    public Profile update(String id, Profile newProfile) {
         Profile actualProfile = this.profileRepository.findById(id).orElse(null);
 
-        if(actualProfile != null){
+        if (actualProfile != null) {
             actualProfile.setPhone(newProfile.getPhone());
             actualProfile.setPhoto(newProfile.getPhoto());
             this.profileRepository.save(actualProfile);
@@ -38,9 +72,14 @@ public class ProfileService {
         }
     }
 
-    public void delete(String id){
+    /**
+     * Elimina un perfil del sistema.
+     * 
+     * @param id Identificador del perfil a eliminar
+     */
+    public void delete(String id) {
         Profile theProfile = this.profileRepository.findById(id).orElse(null);
-        if(theProfile != null){
+        if (theProfile != null) {
             this.profileRepository.delete(theProfile);
         }
     }

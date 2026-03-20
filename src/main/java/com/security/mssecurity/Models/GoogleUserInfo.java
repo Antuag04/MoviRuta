@@ -3,30 +3,47 @@ package com.security.mssecurity.Models;
 import lombok.Data;
 
 /**
- * DTO (Data Transfer Object) para recibir los datos del usuario desde Google.
+ * DTO (Data Transfer Object) para mapear la respuesta de información
+ * de usuario proporcionada por la API de Google OAuth 2.0.
  * 
- * Cuando Google nos responde, nos envía un JSON con esta estructura:
+ * Cuando se realiza una petición al endpoint de userinfo de Google
+ * (https://www.googleapis.com/oauth2/v3/userinfo), la respuesta
+ * contiene los datos del usuario autenticado en formato JSON.
+ * 
+ * Estructura de la respuesta de Google:
  * {
- *   "sub": "123456789",        ← ID único del usuario en Google
- *   "name": "Juan Pérez",      ← Nombre completo
- *   "email": "juan@gmail.com", ← Correo electrónico
- *   "picture": "https://..."   ← URL de la foto de perfil
+ *   "sub": "123456789012345678901",
+ *   "name": "Nombre Completo",
+ *   "email": "usuario@gmail.com",
+ *   "picture": "https://lh3.googleusercontent.com/..."
  * }
  * 
- * Esta clase "mapea" ese JSON a un objeto Java.
+ * @see com.security.mssecurity.Services.GoogleOAuthService
  */
 @Data
 public class GoogleUserInfo {
-    
-    // "sub" es el ID único del usuario en Google (subject)
+
+    /**
+     * Identificador único del usuario en Google (Subject Identifier).
+     * Es un valor numérico representado como String que identifica
+     * de manera única al usuario dentro del sistema de Google.
+     */
     private String sub;
-    
-    // Nombre completo del usuario
+
+    /**
+     * Nombre completo del usuario tal como aparece en su cuenta de Google.
+     */
     private String name;
-    
-    // Correo electrónico (verificado por Google)
+
+    /**
+     * Dirección de correo electrónico verificada por Google.
+     * Se utiliza como identificador único del usuario en el sistema.
+     */
     private String email;
-    
-    // URL de la foto de perfil (opcional, por si la necesitas después)
+
+    /**
+     * URL de la fotografía de perfil del usuario en Google.
+     * Puede utilizarse para mostrar el avatar del usuario en la aplicación.
+     */
     private String picture;
 }
