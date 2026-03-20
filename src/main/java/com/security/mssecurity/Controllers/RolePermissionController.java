@@ -9,7 +9,7 @@ import java.util.List;
 
 @CrossOrigin
 @RestController
-@RequestMapping("/role-permissions")
+@RequestMapping("api/role-permissions")
 public class RolePermissionController {
 
     @Autowired

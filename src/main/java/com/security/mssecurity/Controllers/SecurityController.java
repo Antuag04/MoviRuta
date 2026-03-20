@@ -22,13 +22,14 @@ public class SecurityController {
 
     @PostMapping("register")
     public ResponseEntity<?> register(@RequestBody User newUser) {
-        User created = theSecurityService.register(newUser);
-        if (created == null) {
-            return ResponseEntity.status(HttpStatus.CONFLICT)
-                    .body(Map.of("error", "Email already registered"));
+        try {
+            User created = theSecurityService.register(newUser);
+            created.setPassword(null); // no devolver el hash
+            return ResponseEntity.status(HttpStatus.CREATED).body(created);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("error", e.getMessage()));
         }
-        created.setPassword(null); // no devolver el hash
-        return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
     @PostMapping("login")

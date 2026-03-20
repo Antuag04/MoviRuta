@@ -21,18 +21,14 @@ public class UserRoleService {
     private UserRoleRepository theUserRoleRepository;
 
     public boolean addUserRole(String userId,
-                               String roleId){
-        User user=this.theUserRepository.findById(userId).orElse(null);
-        Role role=this.theRoleRepository.findById(roleId).orElse(null);
-        if (user!=null && role!=null){
-            // Evita duplicados: misma combinación user + role
-            if (this.theUserRoleRepository.existsByUserAndRole(user, role)){
-                return false;
-            }
-            UserRole theUserRole= new UserRole(user,role);
+                               String roleId) {
+        User user = this.theUserRepository.findById(userId).orElse(null);
+        Role role = this.theRoleRepository.findById(roleId).orElse(null);
+        if (user != null && role != null) {
+            UserRole theUserRole = new UserRole(user, role);
             this.theUserRoleRepository.save(theUserRole);
             return true;
-        }else{
+        } else {
             return false;
         }
     }
