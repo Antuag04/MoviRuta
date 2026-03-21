@@ -4,6 +4,8 @@ import lombok.Data;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 
+import java.time.LocalDateTime;
+
 /**
  * Entidad que representa un usuario del sistema.
  * 
@@ -19,6 +21,10 @@ import org.springframework.data.mongodb.core.mapping.Document;
  * 
  * Para usuarios OAuth, el campo password es null ya que la autenticación
  * es delegada al proveedor externo.
+ * 
+ * Adicionalmente, esta entidad almacena datos temporales para:
+ * - Autenticación de dos factores (2FA): código y expiración
+ * - Recuperación de contraseña: token y expiración
  */
 @Data
 @Document
@@ -38,6 +44,54 @@ public class User {
      * Valores posibles: "LOCAL", "GOOGLE", "GITHUB", "MICROSOFT"
      */
     private String authProvider;
+
+    // =========================================================================
+    // CAMPOS PARA AUTENTICACIÓN DE DOS FACTORES (2FA)
+    // =========================================================================
+
+    /**
+     * Código de verificación de 6 dígitos para autenticación de dos factores.
+     * 
+     * Este código se genera cuando el usuario inicia sesión correctamente
+     * y se envía a su correo electrónico. El usuario debe ingresar este
+     * código para completar el proceso de autenticación.
+     * 
+     * Se establece en null después de ser utilizado o cuando expira.
+     */
+    private String twoFactorCode;
+
+    /**
+     * Fecha y hora de expiración del código 2FA.
+     * 
+     * Por defecto, el código expira 5 minutos después de ser generado.
+     * Si el usuario intenta verificar después de esta fecha, el código
+     * se considera inválido.
+     */
+    private LocalDateTime twoFactorExpiry;
+
+    // =========================================================================
+    // CAMPOS PARA RECUPERACIÓN DE CONTRASEÑA
+    // =========================================================================
+
+    /**
+     * Token único (UUID) para recuperación de contraseña.
+     * 
+     * Se genera cuando el usuario solicita restablecer su contraseña
+     * y se envía como parte de un enlace a su correo electrónico.
+     * El formato es UUID v4 (ej: "550e8400-e29b-41d4-a716-446655440000").
+     * 
+     * Se establece en null después de ser utilizado o cuando expira.
+     */
+    private String resetToken;
+
+    /**
+     * Fecha y hora de expiración del token de recuperación.
+     * 
+     * Por defecto, el token expira 30 minutos después de ser generado.
+     * Esto limita la ventana de tiempo en la que un enlace de
+     * recuperación es válido, mejorando la seguridad.
+     */
+    private LocalDateTime resetTokenExpiry;
 
     /**
      * Constructor por defecto requerido por Spring Data MongoDB.

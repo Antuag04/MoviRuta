@@ -1,10 +1,14 @@
 package com.security.mssecurity.Services;
 
 import com.security.mssecurity.Models.GoogleUserInfo;
+import com.security.mssecurity.Models.Profile;
 import com.security.mssecurity.Models.Role;
+import com.security.mssecurity.Models.Session;
 import com.security.mssecurity.Models.User;
 import com.security.mssecurity.Models.UserRole;
+import com.security.mssecurity.Repositories.ProfileRepository;
 import com.security.mssecurity.Repositories.RoleRepository;
+import com.security.mssecurity.Repositories.SessionRepository;
 import com.security.mssecurity.Repositories.UserRepository;
 import com.security.mssecurity.Repositories.UserRoleRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +20,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.Date;
 import java.util.Map;
 
 /**
@@ -68,6 +73,18 @@ public class GoogleOAuthService {
 
     @Autowired
     private UserRoleRepository userRoleRepository;
+
+    @Autowired
+    private SessionRepository sessionRepository;
+
+    @Autowired
+    private ProfileRepository profileRepository;
+
+    /**
+     * Tiempo de expiración del token JWT en milisegundos.
+     */
+    @Value("${jwt.expiration}")
+    private Long jwtExpiration;
 
     /**
      * Cliente HTTP reactivo para realizar peticiones a los endpoints de Google.
@@ -149,14 +166,24 @@ public class GoogleOAuthService {
         User existingUser = userRepository.getUserByEmail(googleUser.getEmail());
         
         if (existingUser != null) {
+            // Usuario existente - ya se registró previamente con Google
             if (!"GOOGLE".equals(existingUser.getAuthProvider())) {
                 throw new RuntimeException(
                     "Este email ya está registrado. Por favor, inicie sesión con su contraseña."
                 );
             }
-            return jwtService.generateToken(existingUser);
+            
+            // Generar JWT para usuario existente
+            String jwtToken = jwtService.generateToken(existingUser);
+            
+            // Crear sesión para rastrear este login
+            // Permite al usuario ver sus sesiones activas y cerrarlas si es necesario
+            createSession(existingUser, jwtToken);
+            
+            return jwtToken;
         }
         
+        // Usuario nuevo - primer login con Google
         User newUser = new User(
                 googleUser.getName(),
                 googleUser.getEmail(),
@@ -166,12 +193,94 @@ public class GoogleOAuthService {
         
         User savedUser = userRepository.save(newUser);
         
+        // Asignar rol CIUDADANO por defecto
         Role ciudadanoRole = roleRepository.findByName("CIUDADANO");
         if (ciudadanoRole != null) {
             UserRole userRole = new UserRole(savedUser, ciudadanoRole);
             userRoleRepository.save(userRole);
         }
         
-        return jwtService.generateToken(savedUser);
+        // Crear perfil con foto de Google
+        // Google proporciona una foto de alta calidad en el campo 'picture'
+        // que podemos usar como foto de perfil predeterminada
+        createProfileWithPhoto(savedUser, googleUser.getPicture());
+        
+        // Generar JWT para usuario nuevo
+        String jwtToken = jwtService.generateToken(savedUser);
+        
+        // Crear sesión para este primer login
+        createSession(savedUser, jwtToken);
+        
+        return jwtToken;
+    }
+    
+    /**
+     * Crea y persiste una nueva sesión para un usuario autenticado con Google.
+     * 
+     * Este método registra cada inicio de sesión exitoso en la base de datos,
+     * vinculando el token JWT generado con el usuario. Esto permite:
+     * 
+     * - Rastrear todas las sesiones activas del usuario en diferentes dispositivos
+     * - Implementar "Ver dispositivos conectados" en el perfil del usuario
+     * - Cerrar sesiones remotamente (ej: "Cerrar sesión en todos los dispositivos")
+     * - Detectar actividad sospechosa (múltiples logins simultáneos de ubicaciones diferentes)
+     * - Auditar accesos al sistema para análisis de seguridad
+     * 
+     * La sesión creada incluye:
+     * - Token JWT: El token generado para esta autenticación
+     * - Expiración: Calculada según la configuración de jwt.expiration
+     * - Usuario: Referencia al usuario propietario (relación @DBRef en MongoDB)
+     * 
+     * NOTA: Las sesiones de OAuth no utilizan el campo code2FA (es null)
+     * ya que el proveedor OAuth (Google) ya realizó la autenticación.
+     * 
+     * @param user Usuario que acaba de autenticarse
+     * @param token Token JWT generado para este inicio de sesión
+     * @return Session creada y persistida en MongoDB
+     */
+    private Session createSession(User user, String token) {
+        Session session = new Session(
+            token,
+            new Date(System.currentTimeMillis() + jwtExpiration),
+            null
+        );
+        session.setUser(user);
+        return sessionRepository.save(session);
+    }
+    
+    /**
+     * Crea y persiste un perfil con foto para un usuario OAuth de Google.
+     * 
+     * Google proporciona información rica del usuario a través de su API,
+     * incluyendo una foto de perfil de alta calidad. Este método aprovecha
+     * esa información para crear un perfil más completo desde el inicio.
+     * 
+     * Datos de Google utilizados:
+     * - picture: URL de la foto de perfil del usuario en Google
+     *   (ejemplo: "https://lh3.googleusercontent.com/...")
+     * 
+     * Beneficios de usar la foto de Google:
+     * - Usuario tiene foto de perfil desde el primer login
+     * - Mejora la experiencia visual de la aplicación
+     * - Mantiene consistencia con la identidad del usuario en Google
+     * - Evita que el usuario tenga que configurar una foto manualmente
+     * 
+     * IMPORTANTE: La URL es externa (alojada en servidores de Google).
+     * Consideraciones:
+     * - La foto puede cambiar si el usuario la actualiza en Google
+     * - Requiere conexión a internet para cargar la imagen
+     * - Si quieres alojarla localmente, debes descargar y subir a tu storage
+     * 
+     * El campo phone se deja null porque Google no comparte el número
+     * de teléfono del usuario por defecto (requiere permisos especiales).
+     * 
+     * @param user Usuario propietario del perfil
+     * @param photoUrl URL de la foto de perfil proporcionada por Google
+     * @return Profile creado y persistido en MongoDB
+     */
+    private Profile createProfileWithPhoto(User user, String photoUrl) {
+        Profile profile = new Profile(null, photoUrl);
+        profile.setUser(user);
+        return profileRepository.save(profile);
     }
 }

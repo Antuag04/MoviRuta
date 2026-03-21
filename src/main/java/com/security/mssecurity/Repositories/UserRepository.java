@@ -29,4 +29,17 @@ public interface UserRepository extends MongoRepository<User, String> {
      */
     @Query("{'email': ?0}")
     public User getUserByEmail(String email);
+
+    /**
+     * Busca un usuario por su token de recuperación de contraseña.
+     * 
+     * Esta consulta es utilizada durante el proceso de restablecimiento
+     * de contraseña para validar que el token proporcionado corresponde
+     * a un usuario válido.
+     * 
+     * @param resetToken Token UUID de recuperación
+     * @return Usuario encontrado o null si el token no existe
+     */
+    @Query("{'resetToken': ?0}")
+    public User findByResetToken(String resetToken);
 }

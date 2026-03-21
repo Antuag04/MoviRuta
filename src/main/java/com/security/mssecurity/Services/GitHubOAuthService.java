@@ -1,10 +1,16 @@
 package com.security.mssecurity.Services;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.security.mssecurity.Models.GitHubUserInfo;
+import com.security.mssecurity.Models.Profile;
 import com.security.mssecurity.Models.Role;
+import com.security.mssecurity.Models.Session;
 import com.security.mssecurity.Models.User;
 import com.security.mssecurity.Models.UserRole;
+import com.security.mssecurity.Repositories.ProfileRepository;
 import com.security.mssecurity.Repositories.RoleRepository;
+import com.security.mssecurity.Repositories.SessionRepository;
 import com.security.mssecurity.Repositories.UserRepository;
 import com.security.mssecurity.Repositories.UserRoleRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +22,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -72,6 +79,18 @@ public class GitHubOAuthService {
 
     @Autowired
     private UserRoleRepository userRoleRepository;
+
+    @Autowired
+    private SessionRepository sessionRepository;
+
+    @Autowired
+    private ProfileRepository profileRepository;
+
+    /**
+     * Tiempo de expiración del token JWT en milisegundos.
+     */
+    @Value("${jwt.expiration}")
+    private Long jwtExpiration;
 
     /**
      * Cliente HTTP reactivo para realizar peticiones a los endpoints de GitHub.
@@ -212,12 +231,20 @@ public class GitHubOAuthService {
         User existingUser = userRepository.getUserByEmail(email);
         
         if (existingUser != null) {
+            // Usuario existente - ya se registró previamente con GitHub
             if (!"GITHUB".equals(existingUser.getAuthProvider())) {
                 throw new RuntimeException(
                     "Este email ya está registrado. Por favor, inicie sesión con su método original."
                 );
             }
-            return jwtService.generateToken(existingUser);
+            
+            // Generar JWT para usuario existente
+            String jwtToken = jwtService.generateToken(existingUser);
+            
+            // Crear sesión para rastrear este login
+            createSession(existingUser, jwtToken);
+            
+            return jwtToken;
         }
         
         String userName = githubUser.getName();
@@ -240,6 +267,62 @@ public class GitHubOAuthService {
             userRoleRepository.save(userRole);
         }
         
-        return jwtService.generateToken(savedUser);
+        // Crear perfil con avatar de GitHub
+        // GitHub proporciona avatar_url con la foto del usuario
+        createProfileWithPhoto(savedUser, githubUser.getAvatar_url());
+        
+        // Generar JWT para usuario nuevo
+        String jwtToken = jwtService.generateToken(savedUser);
+        
+        // Crear sesión para este primer login
+        createSession(savedUser, jwtToken);
+        
+        return jwtToken;
+    }
+    
+    /**
+     * Crea y persiste una nueva sesión para un usuario autenticado con GitHub.
+     * 
+     * Funcionalidad idéntica a Google OAuth, pero para usuarios de GitHub.
+     * Registra cada inicio de sesión para rastreo y gestión multi-dispositivo.
+     * 
+     * @param user Usuario que acaba de autenticarse
+     * @param token Token JWT generado para este inicio de sesión
+     * @return Session creada y persistida en MongoDB
+     * @see GoogleOAuthService#createSession(User, String)
+     */
+    private Session createSession(User user, String token) {
+        Session session = new Session(
+            token,
+            new Date(System.currentTimeMillis() + jwtExpiration),
+            null
+        );
+        session.setUser(user);
+        return sessionRepository.save(session);
+    }
+    
+    /**
+     * Crea y persiste un perfil con foto para un usuario OAuth de GitHub.
+     * 
+     * GitHub proporciona información del usuario incluyendo su avatar.
+     * Este método aprovecha esa información para crear un perfil completo.
+     * 
+     * Datos de GitHub utilizados:
+     * - avatar_url: URL del avatar del usuario en GitHub
+     *   (ejemplo: "https://avatars.githubusercontent.com/u/123456?v=4")
+     * 
+     * Consideraciones de GitHub:
+     * - El avatar es público y accesible
+     * - GitHub permite avatares personalizados o Gravatar
+     * - La URL incluye parámetro ?v=4 para el tamaño
+     * 
+     * @param user Usuario propietario del perfil
+     * @param photoUrl URL del avatar proporcionada por GitHub
+     * @return Profile creado y persistido en MongoDB
+     */
+    private Profile createProfileWithPhoto(User user, String photoUrl) {
+        Profile profile = new Profile(null, photoUrl);
+        profile.setUser(user);
+        return profileRepository.save(profile);
     }
 }

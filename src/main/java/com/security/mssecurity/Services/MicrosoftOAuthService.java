@@ -1,10 +1,14 @@
 package com.security.mssecurity.Services;
 
 import com.security.mssecurity.Models.MicrosoftUserInfo;
+import com.security.mssecurity.Models.Profile;
 import com.security.mssecurity.Models.Role;
+import com.security.mssecurity.Models.Session;
 import com.security.mssecurity.Models.User;
 import com.security.mssecurity.Models.UserRole;
+import com.security.mssecurity.Repositories.ProfileRepository;
 import com.security.mssecurity.Repositories.RoleRepository;
+import com.security.mssecurity.Repositories.SessionRepository;
 import com.security.mssecurity.Repositories.UserRepository;
 import com.security.mssecurity.Repositories.UserRoleRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +20,7 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.Date;
 import java.util.Map;
 
 /**
@@ -88,6 +93,18 @@ public class MicrosoftOAuthService {
 
     @Autowired
     private UserRoleRepository userRoleRepository;
+
+    @Autowired
+    private SessionRepository sessionRepository;
+
+    @Autowired
+    private ProfileRepository profileRepository;
+
+    /**
+     * Tiempo de expiración del token JWT en milisegundos.
+     */
+    @Value("${jwt.expiration}")
+    private Long jwtExpiration;
 
     /**
      * Cliente HTTP reactivo para realizar peticiones a los endpoints de Microsoft.
@@ -183,12 +200,20 @@ public class MicrosoftOAuthService {
         User existingUser = userRepository.getUserByEmail(email);
         
         if (existingUser != null) {
+            // Usuario existente - ya se registró previamente con Microsoft
             if (!"MICROSOFT".equals(existingUser.getAuthProvider())) {
                 throw new RuntimeException(
                     "Este email ya está registrado. Por favor, inicie sesión con su método original."
                 );
             }
-            return jwtService.generateToken(existingUser);
+            
+            // Generar JWT para usuario existente
+            String jwtToken = jwtService.generateToken(existingUser);
+            
+            // Crear sesión para rastrear este login
+            createSession(existingUser, jwtToken);
+            
+            return jwtToken;
         }
         
         String userName = microsoftUser.getDisplayName();
@@ -219,6 +244,73 @@ public class MicrosoftOAuthService {
             userRoleRepository.save(userRole);
         }
         
-        return jwtService.generateToken(savedUser);
+        // Crear perfil predeterminado
+        // Microsoft Graph API puede proporcionar foto, pero requiere permisos adicionales
+        // Por simplicidad, creamos perfil con valores null que el usuario puede completar
+        createDefaultProfile(savedUser);
+        
+        // Generar JWT para usuario nuevo
+        String jwtToken = jwtService.generateToken(savedUser);
+        
+        // Crear sesión para este primer login
+        createSession(savedUser, jwtToken);
+        
+        return jwtToken;
+    }
+    
+    /**
+     * Crea y persiste una nueva sesión para un usuario autenticado con Microsoft.
+     * 
+     * Funcionalidad idéntica a Google y GitHub OAuth, pero para usuarios de Microsoft.
+     * Registra cada inicio de sesión para rastreo y gestión multi-dispositivo.
+     * 
+     * Microsoft Azure AD permite autenticación tanto de cuentas personales
+     * (outlook.com, hotmail.com) como de cuentas organizacionales (empresariales).
+     * Cada tipo de cuenta genera sesiones del mismo modo.
+     * 
+     * @param user Usuario que acaba de autenticarse
+     * @param token Token JWT generado para este inicio de sesión
+     * @return Session creada y persistida en MongoDB
+     * @see GoogleOAuthService#createSession(User, String)
+     */
+    private Session createSession(User user, String token) {
+        Session session = new Session(
+            token,
+            new Date(System.currentTimeMillis() + jwtExpiration),
+            null
+        );
+        session.setUser(user);
+        return sessionRepository.save(session);
+    }
+    
+    /**
+     * Crea y persiste un perfil predeterminado para un usuario OAuth de Microsoft.
+     * 
+     * Microsoft Graph API puede proporcionar foto de perfil, pero requiere
+     * permisos adicionales y una llamada API separada:
+     * GET https://graph.microsoft.com/v1.0/me/photo/$value
+     * 
+     * Por simplicidad y para mantener los permisos OAuth al mínimo necesario,
+     * este método crea un perfil con valores null. El usuario puede:
+     * 1. Completar su teléfono manualmente
+     * 2. Subir una foto de perfil propia
+     * 
+     * Alternativa avanzada (no implementada):
+     * Si se solicita el permiso "User.Read.All" en los scopes de Microsoft,
+     * se puede obtener la foto y crear el perfil con:
+     * createProfileWithPhoto(user, photoUrl)
+     * 
+     * Diferencia con Google/GitHub:
+     * - Google: Siempre proporciona foto en la respuesta básica ✓
+     * - GitHub: Siempre proporciona avatar en la respuesta básica ✓
+     * - Microsoft: Requiere llamada API adicional y permisos extra ⚠️
+     * 
+     * @param user Usuario propietario del perfil
+     * @return Profile creado y persistido en MongoDB
+     */
+    private Profile createDefaultProfile(User user) {
+        Profile profile = new Profile(null, null);
+        profile.setUser(user);
+        return profileRepository.save(profile);
     }
 }
