@@ -69,6 +69,8 @@ public class User {
      */
     private LocalDateTime twoFactorExpiry;
 
+    private Integer twoFactorAttempts;
+
     // =========================================================================
     // CAMPOS PARA RECUPERACIÓN DE CONTRASEÑA
     // =========================================================================

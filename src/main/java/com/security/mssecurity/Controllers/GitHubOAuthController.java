@@ -79,7 +79,7 @@ public class GitHubOAuthController {
      * 3. Obtener la información del usuario desde la API de GitHub
      * 4. Obtener el email del endpoint adicional si es necesario
      * 5. Crear o autenticar al usuario en la base de datos local
-     * 6. Generar un JWT propio
+     * 6. Generar un JWT propioend
      * 7. Redirigir al frontend con el token o mensaje de error
      * 
      * Redirección exitosa: {frontendUrl}/auth/callback?token={jwt}

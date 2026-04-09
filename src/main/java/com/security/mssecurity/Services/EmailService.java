@@ -1,225 +1,241 @@
 package com.security.mssecurity.Services;
 
-import org.springframework.beans.factory.annotation.Autowired;
+import jakarta.mail.internet.MimeMessage;
 import org.springframework.beans.factory.annotation.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
-import jakarta.mail.MessagingException;
-import jakarta.mail.internet.MimeMessage;
-
-/**
- * Servicio de envío de correos electrónicos del sistema.
- * 
- * Este servicio gestiona el envío de correos transaccionales para:
- * - Códigos de verificación 2FA (autenticación de dos factores)
- * - Enlaces de recuperación de contraseña
- * 
- * Utiliza Spring Mail con configuración SMTP definida en application.properties.
- * Los correos se envían en formato HTML para una mejor presentación.
- * 
- * Configuración requerida:
- * - spring.mail.host: Servidor SMTP (ej: smtp.gmail.com)
- * - spring.mail.port: Puerto SMTP (ej: 587)
- * - spring.mail.username: Usuario de autenticación
- * - spring.mail.password: Contraseña de aplicación
- * - app.mail.from: Dirección de remitente
- * - app.frontend.url: URL del frontend para enlaces
- * 
- * @see RecaptchaService
- * @see SecurityService
- */
 @Service
 public class EmailService {
 
-    /**
-     * Bean de Spring Mail para envío de correos.
-     * Se configura automáticamente con las propiedades spring.mail.*
-     */
-    @Autowired
-    private JavaMailSender mailSender;
+    private static final Logger logger = LoggerFactory.getLogger(EmailService.class);
 
-    /**
-     * Dirección de correo que aparecerá como remitente.
-     */
+    private final JavaMailSender mailSender;
+
     @Value("${app.mail.from}")
     private String fromEmail;
 
-    /**
-     * URL base del frontend para construir enlaces.
-     */
     @Value("${app.frontend.url}")
     private String frontendUrl;
 
-    /**
-     * Envía un código de verificación 2FA al correo del usuario.
-     * 
-     * Este método se invoca después de que el usuario proporciona
-     * credenciales válidas en el login. El código enviado debe ser
-     * ingresado por el usuario para completar la autenticación.
-     * 
-     * El correo incluye:
-     * - El código de 6 dígitos en formato destacado
-     * - Tiempo de expiración del código
-     * - Advertencia de seguridad
-     * 
-     * @param toEmail Dirección de correo del destinatario
-     * @param code    Código de 6 dígitos a enviar
-     * @param userName Nombre del usuario para personalizar el mensaje
-     * @throws RuntimeException Si ocurre un error al enviar el correo
-     */
+    public EmailService(JavaMailSender mailSender) {
+        this.mailSender = mailSender;
+    }
+
     public void send2FACode(String toEmail, String code, String userName) {
-        String subject = "Código de verificación - MS Security";
-        
-        String htmlContent = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <style>
-                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                    .header { background-color: #4CAF50; color: white; padding: 20px; text-align: center; }
-                    .content { padding: 20px; background-color: #f9f9f9; }
-                    .code { font-size: 32px; font-weight: bold; color: #4CAF50; 
-                            text-align: center; padding: 20px; letter-spacing: 5px;
-                            background-color: #fff; border: 2px dashed #4CAF50; margin: 20px 0; }
-                    .warning { color: #856404; background-color: #fff3cd; 
-                              padding: 10px; border-radius: 5px; margin-top: 15px; }
-                    .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>🔐 Verificación de Identidad</h1>
+        String subject = "Codigo de verificacion - MoviRuta";
+        String htmlContent = buildEmailLayout(
+                "Verificacion segura",
+                "Tu codigo de acceso temporal",
+                userName,
+                """
+                <p style="margin: 0 0 16px; font-size: 15px; line-height: 1.7; color: #334155;">
+                    Usa el siguiente codigo para completar tu verificacion de identidad en MoviRuta.
+                </p>
+                <div style="margin: 24px 0; padding: 20px; border-radius: 16px; background: #eff6ff; border: 1px solid #bfdbfe; text-align: center;">
+                    <div style="margin-bottom: 8px; font-size: 12px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase; color: #2563eb;">
+                        Codigo de verificacion
                     </div>
-                    <div class="content">
-                        <p>Hola <strong>%s</strong>,</p>
-                        <p>Se ha solicitado un código de verificación para acceder a su cuenta.</p>
-                        <p>Su código de verificación es:</p>
-                        <div class="code">%s</div>
-                        <p>Este código expira en <strong>5 minutos</strong>.</p>
-                        <div class="warning">
-                            ⚠️ <strong>Importante:</strong> Si usted no solicitó este código, 
-                            ignore este correo. Nunca comparta este código con nadie.
-                        </div>
-                    </div>
-                    <div class="footer">
-                        <p>Este es un correo automático, por favor no responda.</p>
-                        <p>© 2024 MS Security - Sistema de Autenticación</p>
+                    <div style="font-size: 34px; font-weight: 800; letter-spacing: 8px; color: #0f172a;">
+                        %s
                     </div>
                 </div>
-            </body>
-            </html>
-            """.formatted(userName, code);
-
-        sendHtmlEmail(toEmail, subject, htmlContent);
+                <div style="padding: 14px 16px; border-left: 4px solid #2563eb; background: #f8fbff; border-radius: 12px; font-size: 14px; line-height: 1.6; color: #475569;">
+                    Este codigo expira en 5 minutos. Si no intentaste iniciar sesion, ignora este mensaje.
+                </div>
+                """.formatted(escapeHtml(code)),
+                null,
+                null
+        );
+        sendEmail(toEmail, subject, htmlContent);
     }
 
-    /**
-     * Envía un enlace de recuperación de contraseña al usuario.
-     * 
-     * Este método se invoca cuando el usuario solicita restablecer
-     * su contraseña. El enlace contiene un token único que permite
-     * al usuario acceder al formulario de cambio de contraseña.
-     * 
-     * El correo incluye:
-     * - Enlace con el token de recuperación
-     * - Tiempo de expiración del enlace
-     * - Instrucciones de seguridad
-     * 
-     * @param toEmail  Dirección de correo del destinatario
-     * @param token    Token UUID único para la recuperación
-     * @param userName Nombre del usuario para personalizar el mensaje
-     * @throws RuntimeException Si ocurre un error al enviar el correo
-     */
     public void sendPasswordResetLink(String toEmail, String token, String userName) {
-        String subject = "Recuperación de contraseña - MS Security";
-        String resetUrl = frontendUrl + "/reset-password?token=" + token;
-        
-        String htmlContent = """
-            <!DOCTYPE html>
+        String subject = "Recuperacion de contraseña - MoviRuta";
+        String resetUrl = frontendUrl + "/resetpassword?token=" + token;
+        String htmlContent = buildEmailLayout(
+                "Recuperacion de cuenta",
+                "Restablece tu contrasena",
+                userName,
+                """
+                <p style="margin: 0 0 16px; font-size: 15px; line-height: 1.7; color: #334155;">
+                    Recibimos una solicitud para cambiar la contraseña de tu cuenta. Para continuar, haz clic en el siguiente boton:
+                </p>
+                <div style="margin: 28px 0; text-align: center;">
+                    <a href="%s" style="display: inline-block; padding: 14px 28px; border-radius: 12px; background: #2563eb; color: #ffffff; text-decoration: none; font-size: 15px; font-weight: 700;">
+                        Restablecer contraseña
+                    </a>
+                </div>
+                <div style="padding: 14px 16px; border-radius: 12px; background: #eff6ff; border: 1px solid #bfdbfe; font-size: 14px; line-height: 1.6; color: #475569;">
+                    Este enlace expira en 30 minutos. Si no realizaste esta solicitud, puedes ignorar este correo con tranquilidad.
+                </div>
+                <p style="margin: 18px 0 0; font-size: 13px; line-height: 1.6; color: #64748b;">
+                    Si el boton no funciona, copia y pega este enlace en tu navegador:<br>
+                    <span style="color: #1d4ed8; word-break: break-all;">%s</span>
+                </p>
+                """.formatted(resetUrl, escapeHtml(resetUrl)),
+                null,
+                null
+        );
+        sendEmail(toEmail, subject, htmlContent);
+    }
+
+    public void sendWelcomeEmail(String toEmail, String userName) {
+        String subject = "Bienvenido a MoviRuta";
+        String htmlContent = buildEmailLayout(
+                "Nueva cuenta",
+                "Tu registro fue exitoso",
+                userName,
+                """
+                <p style="margin: 0 0 16px; font-size: 15px; line-height: 1.7; color: #334155;">
+                    Tu cuenta en MoviRuta fue creada correctamente. Ya puedes iniciar sesion y acceder a las funciones de la plataforma.
+                </p>
+                <div style="margin: 24px 0; padding: 16px 18px; border-radius: 14px; background: #eff6ff; border: 1px solid #bfdbfe;">
+                    <div style="font-size: 14px; font-weight: 700; color: #1e3a8a; margin-bottom: 8px;">Que sigue ahora</div>
+                    <div style="font-size: 14px; line-height: 1.7; color: #475569;">
+                        Completa tu perfil, verifica tus datos y mantente atento a cualquier notificacion de seguridad.
+                    </div>
+                </div>
+                <div style="text-align: center; margin-top: 28px;">
+                    <a href="%s/login" style="display: inline-block; padding: 14px 28px; border-radius: 12px; background: #2563eb; color: #ffffff; text-decoration: none; font-size: 15px; font-weight: 700;">
+                        Ir al inicio de sesion
+                    </a>
+                </div>
+                """.formatted(frontendUrl),
+                "Gracias por confiar en MoviRuta.",
+                null
+        );
+        sendEmail(toEmail, subject, htmlContent);
+    }
+
+    public void sendRoleChangeNotification(String toEmail, String userName, String details) {
+        sendNotificationEmail(
+                toEmail,
+                "Actualizacion de roles - MoviRuta",
+                "Tus roles fueron actualizados",
+                userName,
+                details
+        );
+    }
+
+    public void sendPermissionChangeNotification(String toEmail, String userName, String details) {
+        sendNotificationEmail(
+                toEmail,
+                "Actualizacion de permisos - MoviRuta",
+                "Tus permisos fueron actualizados",
+                userName,
+                details
+        );
+    }
+
+    private void sendNotificationEmail(String toEmail, String subject, String title, String userName, String details) {
+        String htmlContent = buildEmailLayout(
+                "Actualizacion de seguridad",
+                title,
+                userName,
+                """
+                <p style="margin: 0 0 16px; font-size: 15px; line-height: 1.7; color: #334155;">
+                    Registramos una actualizacion importante en tu cuenta:
+                </p>
+                <div style="padding: 18px; border-radius: 14px; background: #eff6ff; border: 1px solid #bfdbfe; font-size: 14px; line-height: 1.7; color: #475569;">
+                    %s
+                </div>
+                """.formatted(formatMultilineHtml(details)),
+                "Si no reconoces este cambio, revisa tu cuenta lo antes posible.",
+                null
+        );
+        sendEmail(toEmail, subject, htmlContent);
+    }
+
+    private String buildEmailLayout(
+            String eyebrow,
+            String title,
+            String userName,
+            String bodyContent,
+            String footerMessage,
+            String secondaryNote
+    ) {
+        String safeUserName = escapeHtml(userName);
+        String safeFooterMessage = footerMessage == null ? "" : """
+                <p style="margin: 22px 0 0; font-size: 14px; line-height: 1.6; color: #475569;">
+                    %s
+                </p>
+                """.formatted(escapeHtml(footerMessage));
+        String safeSecondaryNote = secondaryNote == null ? "" : """
+                <p style="margin: 12px 0 0; font-size: 12px; line-height: 1.6; color: #94a3b8;">
+                    %s
+                </p>
+                """.formatted(escapeHtml(secondaryNote));
+
+        return """
             <html>
-            <head>
-                <meta charset="UTF-8">
-                <style>
-                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                    .header { background-color: #2196F3; color: white; padding: 20px; text-align: center; }
-                    .content { padding: 20px; background-color: #f9f9f9; }
-                    .button { display: inline-block; padding: 15px 30px; background-color: #2196F3; 
-                             color: white; text-decoration: none; border-radius: 5px; 
-                             font-weight: bold; margin: 20px 0; }
-                    .button:hover { background-color: #1976D2; }
-                    .link-text { word-break: break-all; font-size: 12px; color: #666; 
-                                background-color: #eee; padding: 10px; margin: 10px 0; }
-                    .warning { color: #856404; background-color: #fff3cd; 
-                              padding: 10px; border-radius: 5px; margin-top: 15px; }
-                    .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>🔑 Recuperación de Contraseña</h1>
+            <body style="margin: 0; padding: 32px 16px; background: #eaf2ff; font-family: Arial, sans-serif; color: #0f172a;">
+                <div style="max-width: 640px; margin: 0 auto;">
+                    <div style="padding: 24px 28px; background: linear-gradient(135deg, #1d4ed8 0%%, #2563eb 100%%); border-radius: 24px 24px 0 0; color: #ffffff;">
+                        <div style="font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; opacity: 0.9;">MoviRuta</div>
+                        <div style="margin-top: 10px; font-size: 26px; font-weight: 800; line-height: 1.3;">%s</div>
+                        <div style="margin-top: 8px; font-size: 14px; line-height: 1.6; color: #dbeafe;">%s</div>
                     </div>
-                    <div class="content">
-                        <p>Hola <strong>%s</strong>,</p>
-                        <p>Hemos recibido una solicitud para restablecer la contraseña de su cuenta.</p>
-                        <p>Haga clic en el siguiente botón para crear una nueva contraseña:</p>
-                        <p style="text-align: center;">
-                            <a href="%s" class="button">Restablecer Contraseña</a>
+                    <div style="background: #ffffff; border: 1px solid #dbeafe; border-top: none; border-radius: 0 0 24px 24px; padding: 32px 28px; box-shadow: 0 18px 40px rgba(37, 99, 235, 0.10);">
+                        <p style="margin: 0 0 18px; font-size: 15px; line-height: 1.7; color: #334155;">
+                            Hola <strong style="color: #0f172a;">%s</strong>,
                         </p>
-                        <p>O copie y pegue el siguiente enlace en su navegador:</p>
-                        <div class="link-text">%s</div>
-                        <p>Este enlace expira en <strong>30 minutos</strong>.</p>
-                        <div class="warning">
-                            ⚠️ <strong>Importante:</strong> Si usted no solicitó este cambio, 
-                            ignore este correo. Su contraseña actual permanecerá sin cambios.
+                        %s
+                        %s
+                        %s
+                        <div style="margin-top: 28px; padding-top: 18px; border-top: 1px solid #e2e8f0; font-size: 12px; line-height: 1.6; color: #94a3b8;">
+                            Este correo fue generado automaticamente por MoviRuta.
                         </div>
-                    </div>
-                    <div class="footer">
-                        <p>Este es un correo automático, por favor no responda.</p>
-                        <p>© 2024 MS Security - Sistema de Autenticación</p>
                     </div>
                 </div>
             </body>
             </html>
-            """.formatted(userName, resetUrl, resetUrl);
-
-        sendHtmlEmail(toEmail, subject, htmlContent);
+            """.formatted(
+                escapeHtml(title),
+                escapeHtml(eyebrow),
+                safeUserName,
+                bodyContent,
+                safeFooterMessage,
+                safeSecondaryNote
+        );
     }
 
-    /**
-     * Método interno para enviar correos en formato HTML.
-     * 
-     * Utiliza MimeMessage para soportar contenido HTML y caracteres
-     * especiales (UTF-8). Maneja la configuración SMTP automáticamente
-     * a través del bean JavaMailSender.
-     * 
-     * @param to      Dirección de correo del destinatario
-     * @param subject Asunto del correo
-     * @param htmlContent Contenido HTML del correo
-     * @throws RuntimeException Si ocurre un error al enviar el correo
-     */
-    private void sendHtmlEmail(String to, String subject, String htmlContent) {
+    private String formatMultilineHtml(String text) {
+        return escapeHtml(text).replace("\n", "<br>");
+    }
+
+    private String escapeHtml(String value) {
+        if (value == null) {
+            return "";
+        }
+
+        return value
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
+    private void sendEmail(String toEmail, String subject, String htmlContent) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
-            
+            MimeMessageHelper helper = new MimeMessageHelper(message, "UTF-8");
             helper.setFrom(fromEmail);
-            helper.setTo(to);
+            helper.setTo(toEmail);
             helper.setSubject(subject);
-            helper.setText(htmlContent, true); // true = es HTML
-            
+            helper.setText(htmlContent, true);
             mailSender.send(message);
-            System.out.println("[EMAIL] Correo enviado exitosamente a: " + to);
-            
-        } catch (MessagingException e) {
-            System.err.println("[EMAIL] Error al enviar correo a " + to + ": " + e.getMessage());
-            throw new RuntimeException("Error al enviar el correo electrónico. Por favor, intente más tarde.");
+        } catch (Exception e) {
+            logger.warn(
+                    "No se pudo enviar correo a {} con asunto '{}'. El flujo principal continuara.",
+                    toEmail,
+                    subject,
+                    e
+            );
         }
     }
 }

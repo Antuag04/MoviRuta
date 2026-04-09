@@ -5,6 +5,7 @@ import com.security.mssecurity.Models.User;
 import com.security.mssecurity.Repositories.ProfileRepository;
 import com.security.mssecurity.Services.JwtService;
 import com.security.mssecurity.Services.ProfileService;
+import com.security.mssecurity.Services.SecurityService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -55,6 +56,9 @@ public class ProfileController {
 
     @Autowired
     private ProfileRepository profileRepository;
+
+    @Autowired
+    private SecurityService securityService;
 
     /**
      * Obtiene la lista de todos los perfiles registrados.
@@ -210,41 +214,255 @@ public class ProfileController {
      * @return ResponseEntity con el perfil o código de error
      */
     @GetMapping("/me")
-    public ResponseEntity<?> getMyProfile(@RequestHeader("Authorization") String authHeader) {
+    public ResponseEntity<?> getMyProfile(@RequestHeader(value = "Authorization", required = false) String authHeader) {
         try {
-            // Extraer el token JWT del header (remover prefijo "Bearer ")
+            // ✅ LOG 1: Ver si el header llega
+            System.out.println("🔍 [ProfileController] Header Authorization recibido: " + authHeader);
+
+            if (authHeader == null || authHeader.isEmpty()) {
+                System.out.println("❌ [ProfileController] Header Authorization es NULL o vacío");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Authorization header no proporcionado"));
+            }
+
+            // ✅ LOG 2: Ver el token extraído
+            String token = authHeader.replace("Bearer ", "");
+            System.out.println("🔍 [ProfileController] Token extraído: " + token.substring(0, Math.min(50, token.length())) + "...");
+
+            // ✅ LOG 3: Ver si getUserFromToken funciona
+            User user = jwtService.getUserFromToken(token);
+            System.out.println("🔍 [ProfileController] User from token: " + (user != null ? user.getEmail() : "NULL"));
+
+            if (user == null) {
+                System.out.println("❌ [ProfileController] getUserFromToken retornó null");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Token inválido o expirado"));
+            }
+
+            // ✅ LOG 4: Ver si se encuentra el perfil
+            System.out.println("🔍 [ProfileController] Buscando perfil para usuario: " + user.getEmail());
+            Profile profile = profileRepository.findByUser(user);
+            System.out.println("🔍 [ProfileController] Perfil encontrado: " + (profile != null ? profile.getId() : "NULL"));
+
+            if (profile == null) {
+                System.out.println("❌ [ProfileController] Perfil no encontrado en BD para usuario: " + user.getEmail());
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(Map.of(
+                                "error", "Perfil no encontrado",
+                                "message", "El usuario no tiene un perfil asociado"
+                        ));
+            }
+
+            System.out.println("✅ [ProfileController] Retornando perfil: " + profile.getId());
+            return ResponseEntity.ok(profile);
+
+        } catch (Exception e) {
+            System.out.println("❌ [ProfileController] Exception: " + e.getMessage());
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Error: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Crea un perfil automáticamente si el usuario no tiene uno.
+     * 
+     * Este endpoint es útil como recuperación de emergencia cuando un usuario
+     * fue creado sin perfil (ej: creado manualmente por API sin usar register()).
+     * 
+     * FLUJO:
+     * 1. Usuario autenticado solicita GET /api/profiles/create-if-missing
+     * 2. Backend extrae el usuario del JWT
+     * 3. Backend verifica si el usuario tiene perfil
+     * 4. Si existe: retorna el perfil existente
+     * 5. Si no existe: crea un perfil vacío y retorna
+     * 
+     * Este es un endpoint seguro porque:
+     * - Solo funciona para el usuario autenticado (no puede crear perfiles ajenos)
+     * - Requiere token JWT válido
+     * - Usa la ruta /api/profiles/create-if-missing que es clara
+     * 
+     * @param authHeader Header Authorization con formato "Bearer {token}"
+     * @return Perfil existente o nuevo (creado si faltaba)
+     */
+    @GetMapping("/create-if-missing")
+    public ResponseEntity<?> createProfileIfMissing(@RequestHeader("Authorization") String authHeader) {
+        try {
+            // Validar que el header esté presente
+            if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Token no proporcionado"));
+            }
+
+            // Extraer el token JWT del header
             String token = authHeader.replace("Bearer ", "");
             
-            // Obtener el usuario desde el token JWT
+            // Obtener el usuario completo desde el token
             User user = jwtService.getUserFromToken(token);
             
-            // Validar que el token sea válido y tenga usuario
+            // Validar que el token sea válido
             if (user == null) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body(Map.of("error", "Token inválido o expirado"));
+                        .body(Map.of("error", "Token inválido o expirado"));
             }
+
+            System.out.println("🔄 [ProfileController] Verificando/creando perfil para: " + user.getEmail());
             
-            // Buscar el perfil asociado al usuario
-            // Utilizamos ProfileRepository.findByUser() que implementamos
-            Profile profile = profileRepository.findByUser(user);
+            // Crear perfil si falta o retornar el existente
+            Profile profile = profileService.createIfMissing(user);
             
-            // Validar que el perfil exista
-            // En teoría siempre existe porque se crea automáticamente,
-            // pero validamos por seguridad
-            if (profile == null) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(Map.of(
-                        "error", "Perfil no encontrado",
-                        "message", "El usuario no tiene un perfil asociado. Esto no debería ocurrir."
-                    ));
-            }
-            
-            // Retornar el perfil
-            return ResponseEntity.ok(profile);
+            return ResponseEntity.ok(Map.of(
+                    "message", "Perfil listo para usar",
+                    "profile", profile
+            ));
             
         } catch (Exception e) {
+            System.out.println("❌ [ProfileController] Error en create-if-missing: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Map.of("error", "Error al obtener perfil: " + e.getMessage()));
+                    .body(Map.of("error", "Error al crear perfil: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Cambia la contraseña del usuario autenticado actual.
+     * 
+     * Este endpoint permite que un usuario logueado cambie su contraseña
+     * de forma segura. Solo funciona para usuarios con autenticación LOCAL
+     * (no para usuarios registrados con OAuth como Google o GitHub).
+     * 
+     * VALIDACIONES:
+     * - Requiere el JWT en el Authorization header
+     * - Requiere que el usuario sea de tipo LOCAL (no OAuth)
+     * - Verifica que la contraseña actual sea correcta
+     * - La nueva contraseña debe tener al menos 6 caracteres
+     * - La nueva contraseña no puede ser igual a la actual
+     * - Las dos nuevas contraseñas deben coincidir
+     * 
+     * FLUJO:
+     * 1. Usuario en su perfil solicita cambiar contraseña
+     * 2. Frontend abre formulario con 3 campos: actual, nueva, confirmar
+     * 3. Frontend envía POST /api/profiles/change-password con JWT
+     * 4. Backend extrae usuario del JWT
+     * 5. Backend verifica contraseña actual
+     * 6. Backend encripta y guarda nueva contraseña
+     * 7. Backend retorna mensaje de éxito
+     * 
+     * Ejemplo de uso desde frontend:
+     * ```javascript
+     * const changePassword = async () => {
+     *   const token = localStorage.getItem('jwt');
+     *   const response = await fetch('/api/profiles/change-password', {
+     *     method: 'POST',
+     *     headers: {
+     *       'Authorization': `Bearer ${token}`,
+     *       'Content-Type': 'application/json'
+     *     },
+     *     body: JSON.stringify({
+     *       currentPassword: document.getElementById('current').value,
+     *       newPassword: document.getElementById('new').value,
+     *       confirmPassword: document.getElementById('confirm').value
+     *     })
+     *   });
+     *   
+     *   if (response.ok) {
+     *     alert('Contraseña cambiada exitosamente');
+     *     // Limpiar formulario
+     *   } else {
+     *     const { error } = await response.json();
+     *     alert('Error: ' + error);
+     *   }
+     * };
+     * ```
+     * 
+     * Petición JSON (ejemplo):
+     * ```json
+     * {
+     *   "currentPassword": "miContraseñaActual123",
+     *   "newPassword": "miNuevaContraseña456",
+     *   "confirmPassword": "miNuevaContraseña456"
+     * }
+     * ```
+     * 
+     * Respuesta exitosa (200 OK):
+     * ```json
+     * {
+     *   "message": "Contraseña actualizada exitosamente"
+     * }
+     * ```
+     * 
+     * Respuestas de error (400/401):
+     * ```json
+     * {
+     *   "error": "La contraseña actual es incorrecta"
+     * }
+     * ```
+     * 
+     * @param authHeader Header Authorization con formato "Bearer {token}"
+     * @param request Map con: currentPassword, newPassword, confirmPassword
+     * @return ResponseEntity con mensaje de éxito o error
+     */
+    @PostMapping("/change-password")
+    public ResponseEntity<?> changePassword(
+            @RequestHeader("Authorization") String authHeader,
+            @RequestBody Map<String, String> request) {
+        try {
+            // Validar que el header esté presente
+            if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Token no proporcionado"));
+            }
+
+            // Extraer el token JWT
+            String token = authHeader.replace("Bearer ", "");
+            
+            // Obtener el usuario desde el token
+            User user = jwtService.getUserFromToken(token);
+            
+            if (user == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("error", "Token inválido o expirado"));
+            }
+
+            // Obtener campos del request
+            String currentPassword = request.get("currentPassword");
+            String newPassword = request.get("newPassword");
+            String confirmPassword = request.get("confirmPassword");
+
+            // Validar que los campos estén presentes
+            if (currentPassword == null || currentPassword.isEmpty()) {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Debe proporcionar su contraseña actual"));
+            }
+            if (newPassword == null || newPassword.isEmpty()) {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Debe proporcionar la nueva contraseña"));
+            }
+            if (confirmPassword == null || confirmPassword.isEmpty()) {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Debe confirmar la nueva contraseña"));
+            }
+
+            // Validar que las nuevas contraseñas coincidan
+            if (!newPassword.equals(confirmPassword)) {
+                return ResponseEntity.badRequest()
+                        .body(Map.of("error", "Las nuevas contraseñas no coinciden"));
+            }
+
+            // Llamar al servicio para cambiar contraseña
+            securityService.changePassword(user, currentPassword, newPassword);
+
+            return ResponseEntity.ok(Map.of(
+                    "message", "Contraseña actualizada exitosamente"
+            ));
+
+        } catch (RuntimeException e) {
+            // Errores de validación del servicio
+            return ResponseEntity.badRequest()
+                    .body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            // Errores inesperados
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Error al cambiar contraseña: " + e.getMessage()));
         }
     }
 }

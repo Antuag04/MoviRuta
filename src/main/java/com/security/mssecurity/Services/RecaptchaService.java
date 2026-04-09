@@ -9,28 +9,58 @@ import org.springframework.web.reactive.function.client.WebClient;
 import java.util.Map;
 
 /**
- * Servicio de validación de tokens reCAPTCHA v3 de Google.
+ * Servicio de validación de tokens reCAPTCHA v3 (Invisible) de Google.
  * 
  * reCAPTCHA v3 es un sistema de protección contra bots que funciona de forma
- * invisible, analizando el comportamiento del usuario y asignando un score
- * de 0.0 (muy probable bot) a 1.0 (muy probable humano).
+ * completamente invisible para el usuario. En lugar de requerir interacción,
+ * analiza el comportamiento del usuario y asigna un score de 0.0 a 1.0.
+ * 
+ * Scores:
+ * - 1.0: Muy probablemente un humano legítimo
+ * - 0.0: Muy probablemente un bot
+ * - Threshold recomendado: 0.5 (configurable según necesidades)
  * 
  * Flujo de validación:
- * 1. El frontend carga el script de reCAPTCHA y genera un token
- * 2. El frontend envía el token junto con la petición (login, etc.)
- * 3. Este servicio envía el token a la API de Google para validación
- * 4. Google responde con el score y si la validación fue exitosa
- * 5. Si el score supera el umbral configurado (0.5), se permite la acción
+ * 1. El frontend carga el script de reCAPTCHA v3 con la site key
+ * 2. Al enviar un formulario, el frontend ejecuta grecaptcha.execute(siteKey, {action: 'login'})
+ * 3. Google analiza el comportamiento y genera un token con el score
+ * 4. El frontend envía el token junto con la petición (login, etc.)
+ * 5. Este servicio envía el token a la API de Google para validación
+ * 6. Google responde con success, score y action
+ * 7. El backend verifica que score >= threshold y action coincida
  * 
  * Configuración requerida en application.properties:
- * - recaptcha.secret: Clave secreta obtenida de la consola de reCAPTCHA
+ * - recaptcha.site-key: Clave pública para el frontend
+ * - recaptcha.secret: Clave secreta para validación en backend
  * - recaptcha.verify-url: URL de la API de verificación de Google
- * - recaptcha.threshold: Score mínimo aceptado (0.0 - 1.0)
+ * - recaptcha.threshold: Score mínimo aceptable (ej: 0.5)
+ * 
+ * Ejemplo de integración en frontend (Angular):
+ * ```typescript
+ * // En index.html
+ * <script src="https://www.google.com/recaptcha/api.js?render=SITE_KEY"></script>
+ * 
+ * // En el componente
+ * declare var grecaptcha: any;
+ * 
+ * async login() {
+ *   const token = await grecaptcha.execute('SITE_KEY', {action: 'login'});
+ *   this.authService.login(email, password, token).subscribe(...);
+ * }
+ * ```
  * 
  * @see <a href="https://developers.google.com/recaptcha/docs/v3">Documentación reCAPTCHA v3</a>
  */
 @Service
 public class RecaptchaService {
+
+    /**
+     * Clave del sitio (pública) de reCAPTCHA.
+     * Se usa en el frontend para cargar el script.
+     * Se obtiene de: https://www.google.com/recaptcha/admin
+     */
+    @Value("${recaptcha.site-key}")
+    private String recaptchaSiteKey;
 
     /**
      * Clave secreta de reCAPTCHA (nunca se expone al frontend).
@@ -48,9 +78,11 @@ public class RecaptchaService {
 
     /**
      * Umbral mínimo de score para considerar la validación exitosa.
-     * Valor recomendado: 0.5 (puede ajustarse según necesidades)
+     * Valor recomendado: 0.5
+     * - Valores más altos (0.7-0.9): Más estricto, puede bloquear usuarios legítimos
+     * - Valores más bajos (0.3-0.5): Más permisivo, puede permitir algunos bots
      */
-    @Value("${recaptcha.threshold}")
+    @Value("${recaptcha.threshold:0.5}")
     private double threshold;
 
     /**
@@ -66,15 +98,15 @@ public class RecaptchaService {
     }
 
     /**
-     * Valida un token reCAPTCHA con la API de Google.
+     * Valida un token reCAPTCHA v3 con la API de Google.
      * 
      * El proceso de validación incluye:
      * 1. Envío del token y la clave secreta a la API de Google
-     * 2. Recepción de la respuesta con el resultado de la validación
+     * 2. Recepción de la respuesta con success, score y action
      * 3. Verificación de que success sea true
-     * 4. Verificación de que el score supere el umbral configurado
+     * 4. Verificación de que score >= threshold configurado
      * 
-     * Ejemplo de respuesta de Google:
+     * Ejemplo de respuesta exitosa de Google:
      * {
      *   "success": true,
      *   "score": 0.9,
@@ -83,14 +115,20 @@ public class RecaptchaService {
      *   "hostname": "localhost"
      * }
      * 
-     * @param token Token generado por el widget reCAPTCHA en el frontend
-     * @return true si el token es válido y el score supera el umbral, false en caso contrario
+     * Ejemplo de respuesta fallida de Google:
+     * {
+     *   "success": false,
+     *   "error-codes": ["invalid-input-response"]
+     * }
+     * 
+     * @param token Token generado por grecaptcha.execute() en el frontend
+     * @return true si el token es válido y el score >= threshold, false en caso contrario
      */
     public boolean validateToken(String token) {
-        // ⚠️ SOLO PARA DESARROLLO - Remover en producción
-        if ("BYPASS_FOR_TESTING".equals(token)) {
-            System.out.println("[reCAPTCHA] BYPASS activado - Solo desarrollo");
-            return true;
+        // Validación inicial: si no hay token, rechazar inmediatamente
+        if (token == null || token.trim().isEmpty()) {
+            System.out.println("[reCAPTCHA v3] Token vacío o nulo - Rechazado");
+            return false;
         }
 
         try {
@@ -107,47 +145,151 @@ public class RecaptchaService {
 
             // Validar que la respuesta no sea nula
             if (response == null) {
-                System.out.println("[reCAPTCHA] Respuesta nula de Google - Rechazado");
+                System.out.println("[reCAPTCHA v3] Respuesta nula de Google - Rechazado");
                 return false;
             }
 
             // Extraer valores de la respuesta
             Boolean success = (Boolean) response.get("success");
-            Double score = response.get("score") != null 
-                    ? ((Number) response.get("score")).doubleValue() 
-                    : 0.0;
+            Double score = response.get("score") != null ? ((Number) response.get("score")).doubleValue() : 0.0;
+            String action = (String) response.get("action");
 
             // Log para debugging (útil durante desarrollo)
-            System.out.println("[reCAPTCHA] Success: " + success + ", Score: " + score);
+            System.out.println("[reCAPTCHA v3] Success: " + success + ", Score: " + score + ", Action: " + action + ", Threshold: " + threshold);
 
-            // Validar success y score
-            if (Boolean.TRUE.equals(success) && score >= threshold) {
-                System.out.println("[reCAPTCHA] Validación exitosa - Score: " + score);
-                return true;
-            } else {
-                System.out.println("[reCAPTCHA] Validación fallida - Success: " + success + ", Score: " + score + ", Threshold: " + threshold);
+            // Validar success
+            if (!Boolean.TRUE.equals(success)) {
+                System.out.println("[reCAPTCHA v3] Validación fallida - success=false");
                 return false;
             }
 
+            // Validar score contra threshold
+            if (score < threshold) {
+                System.out.println("[reCAPTCHA v3] Score bajo (" + score + " < " + threshold + ") - Posible bot detectado");
+                return false;
+            }
+
+            System.out.println("[reCAPTCHA v3] Validación exitosa - Score: " + score);
+            return true;
+
         } catch (Exception e) {
             // En caso de error de red o parsing, registrar y rechazar
-            System.err.println("[reCAPTCHA] Error al validar token: " + e.getMessage());
+            System.err.println("[reCAPTCHA v3] Error al validar token: " + e.getMessage());
             return false;
         }
     }
 
     /**
-     * Valida un token reCAPTCHA y lanza excepción si falla.
+     * Valida un token reCAPTCHA v3 verificando también la acción esperada.
+     * 
+     * Este método añade una capa adicional de seguridad verificando que
+     * la acción del token coincida con la esperada. Esto previene que
+     * un atacante reutilice un token válido de una acción en otra.
+     * 
+     * Acciones comunes:
+     * - "login": Inicio de sesión
+     * - "register": Registro de usuario
+     * - "forgot_password": Recuperación de contraseña
+     * - "contact": Formulario de contacto
+     * 
+     * @param token Token generado por grecaptcha.execute() en el frontend
+     * @param expectedAction Acción esperada (debe coincidir con la usada en el frontend)
+     * @return true si el token es válido, el score >= threshold y la acción coincide
+     */
+    public boolean validateToken(String token, String expectedAction) {
+        // Validación inicial
+        if (token == null || token.trim().isEmpty()) {
+            System.out.println("[reCAPTCHA v3] Token vacío o nulo - Rechazado");
+            return false;
+        }
+
+        try {
+            // Realizar petición POST a la API de Google
+            Map<String, Object> response = webClient.post()
+                    .uri(verifyUrl)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(BodyInserters
+                            .fromFormData("secret", recaptchaSecret)
+                            .with("response", token))
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+
+            if (response == null) {
+                System.out.println("[reCAPTCHA v3] Respuesta nula de Google - Rechazado");
+                return false;
+            }
+
+            Boolean success = (Boolean) response.get("success");
+            Double score = response.get("score") != null ? ((Number) response.get("score")).doubleValue() : 0.0;
+            String action = (String) response.get("action");
+
+            System.out.println("[reCAPTCHA v3] Success: " + success + ", Score: " + score + ", Action: " + action + ", Expected: " + expectedAction);
+
+            // Validar success
+            if (!Boolean.TRUE.equals(success)) {
+                System.out.println("[reCAPTCHA v3] Validación fallida - success=false");
+                return false;
+            }
+
+            // Validar action si se proporciona expectedAction
+            if (expectedAction != null && !expectedAction.equals(action)) {
+                System.out.println("[reCAPTCHA v3] Acción no coincide (" + action + " != " + expectedAction + ") - Posible ataque");
+                return false;
+            }
+
+            // Validar score
+            if (score < threshold) {
+                System.out.println("[reCAPTCHA v3] Score bajo (" + score + " < " + threshold + ") - Posible bot");
+                return false;
+            }
+
+            System.out.println("[reCAPTCHA v3] Validación exitosa - Score: " + score + ", Action: " + action);
+            return true;
+
+        } catch (Exception e) {
+            System.err.println("[reCAPTCHA v3] Error al validar token: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Valida un token reCAPTCHA v3 y lanza excepción si falla.
      * 
      * Este método es una variante de validateToken que facilita su uso
      * en flujos donde se prefiere manejar la validación mediante excepciones.
      * 
-     * @param token Token generado por el widget reCAPTCHA en el frontend
+     * @param token Token generado por grecaptcha.execute() en el frontend
      * @throws RuntimeException Si el token es inválido o el score es bajo
      */
     public void validateTokenOrThrow(String token) {
         if (!validateToken(token)) {
             throw new RuntimeException("Verificación reCAPTCHA fallida. Por favor, intente nuevamente.");
         }
+    }
+
+    /**
+     * Valida un token reCAPTCHA v3 con acción y lanza excepción si falla.
+     * 
+     * @param token Token generado por grecaptcha.execute() en el frontend
+     * @param expectedAction Acción esperada
+     * @throws RuntimeException Si el token es inválido, el score es bajo o la acción no coincide
+     */
+    public void validateTokenOrThrow(String token, String expectedAction) {
+        if (!validateToken(token, expectedAction)) {
+            throw new RuntimeException("Verificación reCAPTCHA fallida. Por favor, intente nuevamente.");
+        }
+    }
+
+    /**
+     * Obtiene la clave del sitio (site key) para uso en el frontend.
+     * 
+     * Este método permite exponer la site key a través de un endpoint
+     * si se desea cargarla dinámicamente en el frontend.
+     * 
+     * @return La clave pública del sitio reCAPTCHA
+     */
+    public String getSiteKey() {
+        return recaptchaSiteKey;
     }
 }

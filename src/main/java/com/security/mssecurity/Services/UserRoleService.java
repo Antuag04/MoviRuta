@@ -6,20 +6,17 @@ import com.security.mssecurity.Models.UserRole;
 import com.security.mssecurity.Repositories.RoleRepository;
 import com.security.mssecurity.Repositories.UserRepository;
 import com.security.mssecurity.Repositories.UserRoleRepository;
+import java.util.List;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-/**
- * Servicio que gestiona las asignaciones de roles a usuarios.
- * 
- * Este servicio permite asignar y revocar roles a usuarios,
- * controlando los permisos que cada usuario tiene en el sistema.
- * 
- * @see UserRoleRepository
- * @see com.security.mssecurity.Models.UserRole
- */
 @Service
 public class UserRoleService {
+
+    private static final Logger logger = LoggerFactory.getLogger(UserRoleService.class);
 
     @Autowired
     private UserRepository theUserRepository;
@@ -30,44 +27,73 @@ public class UserRoleService {
     @Autowired
     private UserRoleRepository theUserRoleRepository;
 
-    /**
-     * Asigna un rol a un usuario.
-     * 
-     * Crea una nueva relación UserRole entre el usuario y el rol.
-     * Ambas entidades deben existir previamente.
-     * 
-     * @param userId Identificador del usuario
-     * @param roleId Identificador del rol a asignar
-     * @return true si la asignación fue exitosa, false si no se encontraron las entidades
-     */
-    public boolean addUserRole(String userId, String roleId) {
+    @Autowired
+    private EmailService emailService;
+
+    public UserRole addUserRole(String userId, String roleId) {
         User user = this.theUserRepository.findById(userId).orElse(null);
         Role role = this.theRoleRepository.findById(roleId).orElse(null);
-        
-        if (user != null && role != null) {
-            UserRole theUserRole = new UserRole(user, role);
-            this.theUserRoleRepository.save(theUserRole);
-            return true;
-        } else {
-            return false;
+
+        if (user == null || role == null) {
+            return null;
         }
+
+        UserRole existingUserRole = theUserRoleRepository.getUserRole(userId, roleId);
+        if (existingUserRole != null) {
+            return existingUserRole;
+        }
+
+        UserRole savedUserRole = this.theUserRoleRepository.save(new UserRole(user, role));
+        sendRoleChangeNotificationSafely(
+                user.getEmail(),
+                user.getName(),
+                "Se te asigno el rol " + role.getName() + "."
+        );
+        return savedUserRole;
     }
 
-    /**
-     * Revoca un rol de un usuario eliminando la asignación.
-     * 
-     * @param userRoleId Identificador de la asignación UserRole
-     * @return true si la operación fue exitosa, false si no se encontró la asignación
-     */
     public boolean removeUserRole(String userRoleId) {
         UserRole userRole = this.theUserRoleRepository.findById(userRoleId).orElse(null);
-        
-        if (userRole != null) {
-            this.theUserRoleRepository.delete(userRole);
-            return true;
-        } else {
+
+        if (userRole == null) {
             return false;
+        }
+
+        this.theUserRoleRepository.delete(userRole);
+        if (userRole.getUser() != null && userRole.getRole() != null) {
+            sendRoleChangeNotificationSafely(
+                    userRole.getUser().getEmail(),
+                    userRole.getUser().getName(),
+                    "Se removio el rol " + userRole.getRole().getName() + " de tu cuenta."
+            );
+        }
+        return true;
+    }
+
+    public List<String> getUserRoles(String userId) {
+        List<UserRole> userRoles = this.theUserRoleRepository.getRolesByUser(userId);
+        return userRoles.stream()
+                .map(ur -> ur.getRole().getName())
+                .collect(Collectors.toList());
+    }
+
+    public List<UserRole> getUserRoleDetails(String userId) {
+        return this.theUserRoleRepository.getRolesByUser(userId);
+    }
+
+    public List<UserRole> findAll() {
+        return this.theUserRoleRepository.findAll();
+    }
+
+    private void sendRoleChangeNotificationSafely(String toEmail, String userName, String details) {
+        try {
+            emailService.sendRoleChangeNotification(toEmail, userName, details);
+        } catch (Exception ex) {
+            logger.warn(
+                    "No se pudo enviar notificacion de cambio de rol a {}. La operacion principal ya fue ejecutada.",
+                    toEmail,
+                    ex
+            );
         }
     }
 }
-
